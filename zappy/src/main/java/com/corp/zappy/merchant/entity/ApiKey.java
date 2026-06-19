@@ -2,11 +2,17 @@ package com.corp.zappy.merchant.entity;
 
 import com.corp.zappy.common.enums.Environment;
 import jakarta.persistence.*;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.util.UUID;
 
 @Entity
 @Table(name = "api_key")
+@Builder
+@Getter
+@Setter
 public class ApiKey {
 
     @Id
@@ -22,6 +28,9 @@ public class ApiKey {
 
     @Column(nullable = false, length = 200)
     private String keySecretHash;
+
+    @Column(length = 200)
+    private String previousKeySecretHash;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)

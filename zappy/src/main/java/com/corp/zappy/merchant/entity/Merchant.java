@@ -3,11 +3,15 @@ package com.corp.zappy.merchant.entity;
 import com.corp.zappy.common.enums.BusinessType;
 import com.corp.zappy.common.enums.MerchantStatus;
 import jakarta.persistence.*;
+import lombok.Builder;
+import lombok.Getter;
 
 import java.util.UUID;
 
 @Entity
 @Table(name="merchant")
+@Builder
+@Getter
 public class Merchant {
 
     @Id

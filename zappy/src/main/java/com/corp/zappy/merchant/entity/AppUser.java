@@ -2,11 +2,13 @@ package com.corp.zappy.merchant.entity;
 
 import com.corp.zappy.common.enums.UserRole;
 import jakarta.persistence.*;
+import lombok.Builder;
 
 import java.util.UUID;
 
 @Entity
 @Table(name = "app_user")
+@Builder
 public class AppUser {
 
     @Id
