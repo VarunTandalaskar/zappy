@@ -1,0 +1,110 @@
+package com.corp.zappy.vault.service.impl;
+
+import com.corp.zappy.common.entity.Money;
+import com.corp.zappy.common.enums.CardBrand;
+import com.corp.zappy.common.exception.ResourceNotFoundException;
+import com.corp.zappy.common.util.RandomizerUtil;
+import com.corp.zappy.payment.processor.PaymentProcessorRouter;
+import com.corp.zappy.payment.processor.dto.PaymentProcessorRequest;
+import com.corp.zappy.payment.processor.dto.PaymentProcessorResponse;
+import com.corp.zappy.vault.config.VaultEncryptionConfig;
+import com.corp.zappy.vault.dto.request.TokenizeRequest;
+import com.corp.zappy.vault.dto.response.TokenizeResponse;
+import com.corp.zappy.vault.entity.CardToken;
+import com.corp.zappy.vault.entity.VaultCard;
+import com.corp.zappy.vault.repository.CardTokenRepository;
+import com.corp.zappy.vault.repository.VaultCardRepository;
+import com.corp.zappy.vault.service.VaultService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.encrypt.BytesEncryptor;
+import org.springframework.security.crypto.keygen.KeyGenerators;
+import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Map;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class VaultServiceImpl implements VaultService {
+
+    private final CardTokenRepository cardTokenRepository;
+    private final VaultCardRepository vaultCardRepository;
+    private final BytesEncryptor dekEncrypter;
+    private final PaymentProcessorRouter paymentProcessorRouter;
+
+    @Override
+    public TokenizeResponse tokenize(TokenizeRequest request, UUID merchantId) {
+        String lastFour = request.pan().substring(request.pan().length() - 4);
+        String bin = request.pan().substring(0, 6);
+        CardBrand cardBrand = detectBrand(request.pan());
+
+        byte[] dek = KeyGenerators.secureRandom(32).generateKey();
+        byte[] encryptedPan = VaultEncryptionConfig.panEncrypter(dek)
+                .encrypt(request.pan().getBytes(StandardCharsets.UTF_8));
+        byte[] encryptedDek = dekEncrypter.encrypt(dek);
+
+        VaultCard vaultCard = vaultCardRepository.save(VaultCard.builder()
+                .brand(cardBrand)
+                .expiryYear(request.expiryYear().toString())
+                .expiryMonth(request.expiryMonth().toString())
+                .bin(bin)
+                .lastFour(lastFour)
+                .encryptedDek(encryptedDek)
+                .encryptedPan(encryptedPan)
+                .cardHolderName(request.cardHolderName())
+                .build());
+
+        String token = "tok_" + RandomizerUtil.randomBase64(32);
+
+        cardTokenRepository.save(CardToken.builder()
+                .vaultCard(vaultCard)
+                .token(token)
+                .customer(request.customerId())
+                .merchant(merchantId)
+                .build());
+
+        return new TokenizeResponse(token, lastFour, cardBrand, request.expiryMonth(), request.expiryYear());
+    }
+
+    @Override
+    public PaymentProcessorResponse charge(UUID paymentId, String token, Money amount, Map<String, Object> methodDetails) {
+        CardToken cardToken = cardTokenRepository.findByTokenAndRevokedAtIsNull(token)
+                .orElseThrow(() -> new ResourceNotFoundException("CardToken", token));
+
+        VaultCard vaultCard = cardToken.getVaultCard();
+        byte[] panBytes = null;
+
+        try {
+            byte[] dek = dekEncrypter.decrypt(vaultCard.getEncryptedDek());
+            panBytes = VaultEncryptionConfig.panEncrypter(dek).decrypt(vaultCard.getEncryptedPan());
+
+            String pan = new String(panBytes, StandardCharsets.UTF_8);
+            String expiry = vaultCard.getExpiryMonth() + "/" + vaultCard.getExpiryYear();
+
+            PaymentProcessorRequest paymentProcessorRequest = PaymentProcessorRequest
+                    .card(paymentId, pan, expiry, amount, methodDetails);
+
+            PaymentProcessorResponse response = paymentProcessorRouter.charge(paymentProcessorRequest);
+
+            log.info("Vault charge registered, token={}****", token.substring(0, 4));
+
+            return response;
+        } catch (Exception e) {
+            log.warn("Vault charge failed, token={}****", token.substring(0, 4));
+            return new PaymentProcessorResponse.Failure("VAULT_CHARGE_FAILED", e.getMessage());
+        } finally {
+            if (panBytes != null) Arrays.fill(panBytes, (byte) 0);
+        }
+    }
+
+    private CardBrand detectBrand(String pan) {
+        if (pan.startsWith("4")) return CardBrand.VISA;
+        if (pan.startsWith("5") || pan.startsWith("2")) return CardBrand.MASTERCARD;
+        if (pan.startsWith("37") || pan.startsWith("34")) return CardBrand.AMEX;
+        return CardBrand.RUPAY;
+    }
+}
